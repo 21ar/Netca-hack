@@ -1,6 +1,6 @@
 // Reach — last-foot object guidance for blind and low-vision users.
-// Phone camera finds the object + the user's hand; the ESP32 wrist buzzer
-// beeps faster as the hand gets closer and holds a steady tone on target.
+// Phone held against the reaching arm finds the object; the ESP32 buzzer on the hand
+// beeps faster as you aim at it and get closer, and holds a steady tone when in reach.
 //
 // Phone UI source: web/index.html (embedded via tools/embed_page.py)
 // Board: "ESP32 Dev Module"   Libraries: Adafruit SSD1306 (+ Adafruit GFX)

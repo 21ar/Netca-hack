@@ -3,26 +3,40 @@
 <title>Reach</title>
 <style>
 body{margin:0;font-family:sans-serif;background:#000;color:#fff;text-align:center}
-canvas{width:100%;max-height:55vh;object-fit:contain;background:#111}
+canvas{width:100%;max-height:50vh;object-fit:contain;background:#111}
 button{font-size:22px;padding:14px 8px;margin:4px;border-radius:12px;border:0;background:#333;color:#fff;min-width:29%}
 button.on{background:#0a7}
-#start,#mic{background:#06c;width:94%}
-#status{font-size:28px;font-weight:bold;margin:8px;min-height:34px}
+#start{background:#06c;width:94%}
+#mic{background:#c60;width:94%;font-size:30px;padding:28px 8px}
+#status{font-size:30px;font-weight:bold;margin:8px;min-height:36px}
 #err{color:#f66;font-size:16px}
 </style></head><body>
 <button id="start">Start camera</button>
 <canvas id="c"></canvas>
 <div id="status">Tap Start</div>
 <div id="err"></div>
-<button id="mic">🎤 Say an object</button>
+<button id="mic">🎤 Tap, then say the object</button>
 <div id="targets"></div>
 <video id="v" playsinline muted style="position:absolute;width:1px;height:1px;opacity:0"></video>
 <script type="module">
-import {FilesetResolver, HandLandmarker, ObjectDetector} from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@1.2.3/vision_bundle.mjs";
+// Arm-mounted guidance: the phone is held upright against the reaching forearm,
+// back camera pointing where the hand is going.
+//  - object off-center  -> say "left/right/up/down"
+//  - object centered    -> say "forward"
+//  - object big enough  -> "grab it" (steady tone)
+// The buzzer beeps faster the more centered AND the bigger (closer) the object is.
+import {FilesetResolver, ObjectDetector} from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@1.2.3/vision_bundle.mjs";
 
 const BASE = "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@1.2.3";
 const TARGETS = ["cup","bottle","cell phone","remote","bowl","book","scissors","apple"];
 const ALIASES = {phone:"cell phone", mug:"cup", water:"bottle", controller:"remote"};
+
+// ---- tuning ----
+const SCORE_THRESHOLD = 0.35; // lower = finds objects more easily, more false hits
+const CENTER_ZONE = 0.15;     // how far from center (fraction of frame) still counts as "aimed"
+const GRAB_SIZE = 0.55;       // object fills this fraction of the frame -> "grab it"
+const LOST_MS = 700;          // keep the last sighting this long (bridges flicker)
+const REPEAT_MS = 2500;       // repeat the same spoken direction this often
 
 // Served by the ESP32 -> same origin. Served from a laptop -> add ?esp=<ESP32 IP> to the URL.
 const ESP = new URLSearchParams(location.search).get("esp");
@@ -30,14 +44,14 @@ const ESP_BASE = ESP ? `http://${ESP}` : "";
 
 const $ = id => document.getElementById(id);
 const v = $("v"), c = $("c"), ctx = c.getContext("2d");
-let hands, objects, target = null, box = null, hand = null, frame = 0;
+let detector, target = null, box = null, seenAt = 0, announced = false;
 let lastSpoken = "", lastSpokenAt = 0, lastSend = 0, inflight = false;
 
 function setStatus(t){ $("status").textContent = t; }
 
 function say(text, force){
   const now = performance.now();
-  if (!force && text === lastSpoken && now - lastSpokenAt < 2500) return;
+  if (!force && text === lastSpoken && now - lastSpokenAt < REPEAT_MS) return;
   if (!force && speechSynthesis.speaking) return;
   speechSynthesis.cancel();
   speechSynthesis.speak(new SpeechSynthesisUtterance(text));
@@ -55,9 +69,9 @@ function send(d){
 }
 
 function setTarget(name){
-  target = name; box = null;
+  target = name; box = null; announced = false;
   document.querySelectorAll("#targets button").forEach(b => b.classList.toggle("on", b.textContent === name));
-  say(`Looking for ${name}`, true);
+  say(`Looking for ${name}. Sweep your arm slowly.`, true);
 }
 
 for (const t of TARGETS){
@@ -69,6 +83,7 @@ for (const t of TARGETS){
 $("mic").onclick = () => {
   const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
   if (!SR){ $("err").textContent = "Voice input not supported in this browser"; return; }
+  speechSynthesis.cancel();  // don't let the phone hear itself
   const rec = new SR();
   rec.lang = "en-US";
   rec.onresult = e => {
@@ -79,25 +94,23 @@ $("mic").onclick = () => {
   };
   rec.onerror = e => { $("err").textContent = "Voice error: " + e.error; };
   rec.start();
+  setStatus("Listening…");
 };
 
 $("start").onclick = async () => {
   $("start").disabled = true;
-  setStatus("Loading models…");
+  setStatus("Loading AI model…");
   try {
     if (!navigator.mediaDevices) throw new Error("camera blocked on http — enable the Chrome 'Insecure origins treated as secure' flag for this address");
     const fs = await FilesetResolver.forVisionTasks(BASE + "/wasm");
-    hands = await HandLandmarker.createFromOptions(fs, {
-      baseOptions: {modelAssetPath: "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task", delegate: "GPU"},
-      runningMode: "VIDEO", numHands: 1});
-    objects = await ObjectDetector.createFromOptions(fs, {
+    detector = await ObjectDetector.createFromOptions(fs, {
       baseOptions: {modelAssetPath: "https://storage.googleapis.com/mediapipe-models/object_detector/efficientdet_lite0/float16/1/efficientdet_lite0.tflite", delegate: "GPU"},
-      runningMode: "VIDEO", scoreThreshold: 0.35, maxResults: 5});
-    v.srcObject = await navigator.mediaDevices.getUserMedia({video: {facingMode: "environment", width: 640, height: 480}, audio: false});
+      runningMode: "VIDEO", scoreThreshold: SCORE_THRESHOLD, maxResults: 5});
+    v.srcObject = await navigator.mediaDevices.getUserMedia({video: {facingMode: "environment"}, audio: false});
     await v.play();
     c.width = v.videoWidth; c.height = v.videoHeight;
     $("start").style.display = "none";
-    say("Reach ready. Choose an object.", true);
+    say("Reach ready. Tap the big button and say an object.", true);
     requestAnimationFrame(loop);
   } catch (e) {
     $("err").textContent = "Start failed: " + e.message;
@@ -113,21 +126,33 @@ function updateTarget(dets){
     const cat = d.categories[0];
     if (cat.categoryName === target && (!best || cat.score > best.score)) best = {score: cat.score, b: d.boundingBox};
   }
-  if (!best) return;  // keep last known position (the hand often hides the object)
-  const W = v.videoWidth, H = v.videoHeight, first = !box;
+  if (!best) return;
+  const W = v.videoWidth, H = v.videoHeight;
   box = {x: best.b.originX / W, y: best.b.originY / H, w: best.b.width / W, h: best.b.height / H};
-  if (first) say(`${target} found. Reach out.`, true);
+  seenAt = performance.now();
 }
 
 function guide(){
-  if (!target){ setStatus("Choose an object"); send(-1); return; }
-  if (!box){ setStatus(`Searching for ${target}…`); send(-1); return; }
-  if (!hand){ setStatus(`${target} locked — show your hand`); send(-1); return; }
-  const inside = hand.x > box.x && hand.x < box.x + box.w && hand.y > box.y && hand.y < box.y + box.h;
-  if (inside){ setStatus("GRAB IT"); say("Grab it"); send(0); return; }
-  const dx = box.x + box.w / 2 - hand.x, dy = box.y + box.h / 2 - hand.y;
-  const d = Math.min(100, Math.max(1, Math.round(Math.hypot(dx, dy) * 150)));
-  const dir = Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? "right" : "left") : (dy < 0 ? "forward" : "back");
+  if (!target){ setStatus("Say or tap an object"); send(-1); return; }
+  if (!box || performance.now() - seenAt > LOST_MS){
+    setStatus(`Searching for ${target}…`); send(-1);
+    say(`Searching. Sweep slowly.`);
+    return;
+  }
+  if (!announced){ say(`${target} found`, true); announced = true; }
+
+  const ox = box.x + box.w / 2 - 0.5;           // + = object is right of center
+  const oy = box.y + box.h / 2 - 0.5;           // + = object is below center
+  const size = Math.max(box.w, box.h);          // bigger = closer
+  const aimed = Math.abs(ox) < CENTER_ZONE && Math.abs(oy) < CENTER_ZONE;
+
+  if (aimed && size >= GRAB_SIZE){ setStatus("GRAB IT"); say("Grab it"); send(0); return; }
+
+  // One "warmer/colder" number for the buzzer: closer and better aimed -> smaller -> faster beeps
+  const d = Math.min(100, Math.max(1, Math.round(100 * (1 - size / GRAB_SIZE) + 120 * Math.hypot(ox, oy))));
+  const dir = aimed ? "forward"
+            : Math.abs(ox) > Math.abs(oy) ? (ox > 0 ? "right" : "left")
+            : (oy > 0 ? "down" : "up");
   setStatus(`${dir.toUpperCase()} · ${d}`);
   say(dir);
   send(d);
@@ -135,24 +160,17 @@ function guide(){
 
 function draw(){
   ctx.drawImage(v, 0, 0, c.width, c.height);
-  if (box){
-    ctx.strokeStyle = "#0f0"; ctx.lineWidth = 4;
+  // aim zone in the middle
+  ctx.strokeStyle = "#ff0"; ctx.lineWidth = 3;
+  ctx.strokeRect((0.5 - CENTER_ZONE) * c.width, (0.5 - CENTER_ZONE) * c.height, 2 * CENTER_ZONE * c.width, 2 * CENTER_ZONE * c.height);
+  if (box && performance.now() - seenAt <= LOST_MS){
+    ctx.strokeStyle = "#0f0"; ctx.lineWidth = 5;
     ctx.strokeRect(box.x * c.width, box.y * c.height, box.w * c.width, box.h * c.height);
-  }
-  if (hand){
-    const hx = hand.x * c.width, hy = hand.y * c.height;
-    ctx.fillStyle = "#f0f"; ctx.beginPath(); ctx.arc(hx, hy, 10, 0, 7); ctx.fill();
-    if (box){
-      ctx.strokeStyle = "#ff0"; ctx.beginPath(); ctx.moveTo(hx, hy);
-      ctx.lineTo((box.x + box.w / 2) * c.width, (box.y + box.h / 2) * c.height); ctx.stroke();
-    }
   }
 }
 
 function loop(){
-  const t = performance.now();
-  if (frame++ % 2 === 0) updateTarget(objects.detectForVideo(v, t).detections);
-  else { const r = hands.detectForVideo(v, t); hand = r.landmarks.length ? r.landmarks[0][9] : null; }
+  updateTarget(detector.detectForVideo(v, performance.now()).detections);
   guide();
   draw();
   requestAnimationFrame(loop);

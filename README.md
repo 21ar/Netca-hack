@@ -1,17 +1,21 @@
 # Reach 🖐️ — last-foot object guidance for blind users
 
-> Say **"cup"**. Your phone camera finds the cup and your hand. A buzzer on your wrist
-> **beeps faster as your hand gets closer** and holds a steady tone when you're on it,
-> while your phone says **"left… forward… grab it."**
+> Hold your phone against your reaching arm like a "wrist eye" and say **"cup"**.
+> A buzzer on your hand **beeps faster as you aim at the cup and get closer**, and holds
+> a steady tone when it's within reach, while the phone says **"left… up… forward… grab it."**
 
 ```
  Phone (camera + AI + voice)  ──Wi-Fi (phone hotspot)──►  ESP32 (wrist buzzer + OLED)
-  • finds the object (MediaPipe object detector)            • beep rate = distance
-  • tracks your hand (MediaPipe hand landmarks)             • steady tone = grab it
+  • hears the object name (phone mic)                      • beep rate = warmer / colder
+  • finds the object (MediaPipe object detector)            • steady tone = grab it
   • says the direction out loud                            • OLED shows status for judges
 ```
 
 All the vision AI runs **on the phone**. The ESP32 hosts the web page and drives the buzzer.
+
+**How the phone is held:** upright against the inside of the reaching forearm, near the wrist, with the screen facing you and the back camera pointing where your hand is going. Hold it there with your other hand. Because the camera moves with your arm:
+- **Object in the middle of the picture** = your arm is pointing at it
+- **Object getting bigger in the picture** = your hand is getting closer
 
 ---
 
@@ -32,8 +36,8 @@ All the vision AI runs **on the phone**. The ESP32 hosts the web page and drives
 | Time | 🔌 Hardware person (H) | 💻 Coding person (C) |
 |---|---|---|
 | 0–10 min | Wire the OLED and buzzer. Install Arduino IDE, the ESP32 board package and the library | Clone the repo. Turn on the phone hotspot (2.4 GHz). Start laptop dev mode |
-| 10–20 min | Create `secrets.h`, upload the sketch, run the buzzer test | Test the page with the laptop webcam. Check that objects and your hand are detected |
-| 20–30 min | Wrist mount, phone stand, power bank | Set the Chrome flag on the phone. Run it end to end on the phone |
+| 10–20 min | Create `secrets.h`, upload the sketch, run the buzzer test | Test the page with the laptop webcam. Check that a cup or bottle is detected |
+| 20–30 min | Tape the buzzer to the hand, ESP32 and power bank in a pocket | Set the Chrome flag on the phone. Run it end to end on the phone |
 | 30–40 min | Re-upload if C changed the page | Tune the thresholds. Rehearse the pitch |
 | 40–45 min | **Full demo run-through together** | |
 
@@ -59,6 +63,11 @@ You don't need the relay, LEDs, joystick, Arduino shield, Pi, LCD or ultrasonic 
 | OLED **SDA** | **D21** |
 | Buzzer **+** (longer leg, or the side marked +) | **D25** |
 | Buzzer **−** | **GND** |
+
+**New to hardware?**
+- The pin names are printed on the ESP32 next to each pin. Depending on the board, the same pin may be labelled `D21`, `G21`, `IO21` or just `21`. **3V3** may say `3.3V`. Any `GND` pin works.
+- Wire everything **before** plugging in USB. If something gets hot or smells, unplug it immediately.
+- The OLED pins are labelled on the OLED itself. Their order (GND/VCC/SCL/SDA) differs between boards, so go by the labels, not by position.
 
 Tip: the ESP32 is too wide for the breadboard. Push female-female jumpers straight onto its pins, and use a breadboard rail as the shared GND.
 
@@ -88,8 +97,9 @@ On any device connected to the hotspot, open these addresses in a browser. Each 
 If all three work, the hardware is done ✅
 
 ### Demo rig
-- Tape the buzzer to the inside of the demo user's wrist with long jumper wires. Power the ESP32 from a **USB power bank** in a pocket, or from the laptop.
-- Make a **phone stand**: prop the phone at chest height with the back camera looking down at the table, from the user's side. A stack of books or a box works fine. The camera should see the whole table area and the user's hand.
+- Tape the buzzer to the **back of the reaching hand**, using long jumper wires back to the ESP32.
+- Power the ESP32 from a **USB power bank** in a pocket. If you don't have one, use the laptop with a long USB cable.
+- Practise the phone position: upright against the reaching forearm, screen toward you, back camera pointing forward. Your other hand holds it there.
 
 ---
 
@@ -131,18 +141,20 @@ Then H runs `git pull` and clicks Upload again.
 ### Settings to tune (all in `web/index.html`)
 | Setting | Where | Effect |
 |---|---|---|
-| `scoreThreshold: 0.35` | `ObjectDetector.createFromOptions` | Lower it (0.25) if the object isn't found. Raise it if the wrong thing gets picked |
+| `SCORE_THRESHOLD = 0.35` | tuning block at the top | Lower it (0.25) if the object isn't found. Raise it if the wrong thing gets picked |
+| `GRAB_SIZE = 0.55` | tuning block | How much of the picture the object must fill before "grab it". Lower = says it earlier |
+| `CENTER_ZONE = 0.15` | tuning block | Size of the "aimed" zone (yellow box on screen). Bigger = easier to aim |
 | `TARGETS` / `ALIASES` | top of the script | Object buttons and spoken synonyms. Names must be COCO object labels, e.g. `cup`, `bottle`, `cell phone`, `remote`, `bowl`, `book`, `scissors`, `apple`, `banana`, `keyboard`, `mouse` |
-| `* 150` in `guide()` | distance scale | Bigger number = beeps speed up sooner |
-| `2500` in `say()` | speech repeat (ms) | How often the same direction is repeated |
-| `left/right/forward/back` | `dir` line in `guide()` | Swap the words if the phone faces the opposite way |
+| `REPEAT_MS = 2500` | tuning block | How often the same spoken direction is repeated |
+| `left/right`, `up/down` | `dir` line in `guide()` | Swap the words if the directions come out backwards |
 | `map(d, 1, 100, 120, 900)` | `updateBuzzer()` in `Reach.ino` | Beep interval in ms, from closest to farthest (needs a re-upload) |
 
 ### How the guidance works
-1. The object detector finds the target and **remembers its position**, because your hand often covers it while you reach.
-2. The hand tracker follows the center of your palm (landmark 9).
-3. Vector from palm to object → spoken direction along the bigger axis, plus a distance value from 1 to 100 sent to the ESP32 about 8 times a second.
-4. Palm inside the object's box → distance 0 → steady tone and "Grab it".
+1. You tap the big orange button and say an object. Chrome's speech recognition turns it into a label, such as "cup".
+2. Every frame, the object detector looks for that label. The camera sits on your arm, so the object's position in the picture shows where your arm is pointing.
+3. **Object off-center** → "left", "right", "up" or "down". **Object centered** → "forward".
+4. **Object centered and filling at least `GRAB_SIZE` of the picture** → distance 0 → steady tone and "Grab it".
+5. Buzzer: one "warmer/colder" number from 1 to 100, sent about 8 times a second. It gets smaller (faster beeps) as the object gets more centered and bigger.
 5. If the phone stops sending for 1 second, the ESP32 goes silent, so it never gets stuck buzzing.
 
 ---
@@ -150,8 +162,8 @@ Then H runs `git pull` and clicks Upload again.
 ## 🎤 Demo script (2 minutes)
 
 1. **Problem (20 s):** "About 43 million people are blind, and that's projected to reach 61 million by 2050.¹ Apps can tell you *there's a cup on the table*. None of them get your hand *to* the cup. So people sweep the table and knock things over."
-2. **Live demo (60 s):** Put a cup and a bottle on the table. The demo user closes their eyes and taps **🎤** (or a button): "cup". The phone says "Cup found, reach out." They follow the beeps and voice and pick it up. **Then move the cup and do it again.**
-3. **How it works (20 s):** On-device AI on the phone finds both the object and the hand. A $5 ESP32 gives feedback you can feel on your wrist. Nothing is uploaded to the cloud.
+2. **Live demo (60 s):** Put a cup and a bottle on the table, about an arm's length away. The demo user closes their eyes, holds the phone against their forearm, taps **🎤** and says "cup". They sweep their arm slowly until the phone says "cup found", then follow the beeps and the voice ("left… forward… grab it") and pick up the cup. **Then move the cup and do it again.**
+3. **How it works (20 s):** On-device AI on the phone acts as an eye on your arm. A $5 ESP32 turns "how close" into beeps on your hand. Nothing is uploaded to the cloud.
 4. **What's next (20 s):** A vibration motor instead of a buzzer, a glasses-mounted camera, voice-only setup, and more object types (keys, medication bottles).
 
 ¹ Global Burden of Disease / Vision Loss Expert Group, *The Lancet Global Health*, 2021: 43.3 million people blind in 2020, 61 million projected by 2050.
@@ -172,5 +184,7 @@ Then H runs `git pull` and clicks Upload again.
 | `Start failed: ... fetch` or the models never load | The phone has no internet. Turn on mobile data |
 | Red "ESP32 not reachable" | The phone or laptop isn't on the same hotspot, the IP is wrong, or the ESP32 is unpowered |
 | The object is never found | Use better light and a plain background. Lower `scoreThreshold`. Cups and bottles are detected most reliably |
-| Directions are mirrored | Swap `left`/`right` (and `forward`/`back`) in `guide()` |
+| Directions are backwards | Swap `left`/`right` (or `up`/`down`) in the `dir` line of `guide()` |
+| It says "grab it" too early or too late | Change `GRAB_SIZE` |
+| It keeps losing the object up close | Up close the cup fills the whole picture, so the AI can't tell what it is. Lower `GRAB_SIZE` (try 0.45) |
 | No sound from the buzzer | You've used the **passive** buzzer by mistake, or + and − are swapped |
