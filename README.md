@@ -24,7 +24,8 @@ All the vision AI runs **on the phone**. The ESP32 hosts the web page and drives
 | Path | What it is | Who edits it |
 |---|---|---|
 | `firmware/Reach/Reach.ino` | ESP32 sketch: Wi-Fi, web server, buzzer, OLED | Hardware person |
-| `firmware/Reach/secrets.example.h` | Template for the hotspot name and password. Copy it to `secrets.h` | Hardware person |
+| `firmware/Reach/secrets.example.h` | Template for the hotspot name and password. `tools/setup.ps1` creates `secrets.h` from your answers | — |
+| `tools/setup.ps1`, `tools/flash.ps1` | One-time laptop setup, then upload and serial monitor | Hardware person |
 | `firmware/Reach/page_html.h` | **Generated** copy of the web page. Don't edit it by hand | — |
 | `web/index.html` | Phone app: camera, AI, voice, guidance logic. **The single source of truth for the UI** | Coding person |
 | `tools/embed_page.py` | Copies `web/index.html` into `page_html.h` | Coding person |
@@ -35,8 +36,8 @@ All the vision AI runs **on the phone**. The ESP32 hosts the web page and drives
 
 | Time | 🔌 Hardware person (H) | 💻 Coding person (C) |
 |---|---|---|
-| 0–10 min | Wire the OLED and buzzer. Install Arduino IDE, the ESP32 board package and the library | Clone the repo. Turn on the phone hotspot (2.4 GHz). Start laptop dev mode |
-| 10–20 min | Create `secrets.h`, upload the sketch, run the buzzer test | Test the page with the laptop webcam. Check that a cup or bottle is detected |
+| 0–10 min | Wire the OLED and buzzer. Run `tools\\setup.ps1` while you wire | Clone the repo. Turn on the phone hotspot (2.4 GHz). Start laptop dev mode |
+| 10–20 min | Run `tools\\flash.ps1`, then the buzzer test | Test the page with the laptop webcam. Check that a cup or bottle is detected |
 | 20–30 min | Tape the buzzer to the hand, ESP32 and power bank in a pocket | Set the Chrome flag on the phone. Run it end to end on the phone |
 | 30–40 min | Re-upload if C changed the page | Tune the thresholds. Rehearse the pitch |
 | 40–45 min | **Full demo run-through together** | |
@@ -71,22 +72,20 @@ You don't need the relay, LEDs, joystick, Arduino shield, Pi, LCD or ultrasonic 
 
 Tip: the ESP32 is too wide for the breadboard. Push female-female jumpers straight onto its pins, and use a breadboard rail as the shared GND.
 
-### Software setup (Windows laptop)
-1. Install **Arduino IDE 2**.
-2. Go to *File → Preferences → Additional boards manager URLs* and add
-   `https://espressif.github.io/arduino-esp32/package_esp32_index.json`
-3. In *Boards Manager*, install **esp32 by Espressif Systems**.
-4. In *Library Manager*, install **Adafruit SSD1306**. Click "Install all" so it also installs Adafruit GFX.
-5. Create the secrets file. In the repo folder, run:
-   ```
-   copy firmware\Reach\secrets.example.h firmware\Reach\secrets.h
-   ```
-   Then put C's phone hotspot name and password in `secrets.h`. This file is git-ignored, so the password is never pushed.
-6. Open `firmware/Reach/Reach.ino`. Choose board **ESP32 Dev Module** and the right **COM port**, then click **Upload**.
-   - If the upload hangs on `Connecting....`, **hold the BOOT button** on the ESP32 until it starts writing.
-7. Open the Serial Monitor at **115200** baud. Within a few seconds you should see:
-   - a short beep from the buzzer
-   - `REACH 192.168.x.x` on the OLED. **Tell C this IP address.**
+### Software setup (Windows laptop, scripted)
+No Arduino IDE needed. Open **PowerShell** and paste:
+```powershell
+cd ~; if (!(Test-Path Netca-hack)) { git clone git@github.com:21ar/Netca-hack.git }; cd Netca-hack; git pull; powershell -ExecutionPolicy Bypass -File tools\setup.ps1
+```
+This downloads arduino-cli, installs ESP32 support and the OLED library, asks for the **hotspot name and password** (saved to the git-ignored `secrets.h`), and test-compiles. It takes about 5–10 minutes, mostly downloading.
+
+Then **plug the ESP32 in by USB** and run:
+```powershell
+powershell -ExecutionPolicy Bypass -File tools\flash.ps1
+```
+This uploads the firmware and opens the serial monitor. Re-run it after any code change.
+- If the upload hangs on `Connecting....`, **hold the BOOT button** on the ESP32 until it starts writing.
+- **It worked if** you hear a short beep and the OLED shows `REACH 192.168.x.x`. The monitor also prints `Open on phone: http://...`. **Tell C this IP address.**
 
 ### Buzzer test (no phone or AI needed)
 On any device connected to the hotspot, open these addresses in a browser. Each one buzzes for about 1 second:
@@ -136,7 +135,7 @@ If you only have an iPhone, use laptop mode for the demo instead.
 python tools/embed_page.py      # web/index.html -> firmware/Reach/page_html.h
 git add -A && git commit -m "page: ..." && git push
 ```
-Then H runs `git pull` and clicks Upload again.
+Then H runs `git pull` and `tools\\flash.ps1` again.
 
 ### Settings to tune (all in `web/index.html`)
 | Setting | Where | Effect |
@@ -179,7 +178,7 @@ Then H runs `git pull` and clicks Upload again.
 | OLED stays blank and Serial says `OLED not found` | Check that SDA→D21 and SCL→D22 aren't swapped, and that VCC goes to **3V3** |
 | OLED says `WiFi FAILED` | Wrong name or password in `secrets.h`, or the hotspot is on 5 GHz. Switch it to 2.4 GHz |
 | Upload gets stuck at `Connecting...` | Hold **BOOT** while it connects. Try another USB cable, since some only carry power |
-| `secrets.h: No such file` when compiling | You skipped step 5 of the hardware setup |
+| `secrets.h: No such file` when compiling | Run `tools\\setup.ps1`. It creates the file |
 | `Start failed: camera blocked on http` | Set up the Chrome flag (Phone mode, steps 1–4) |
 | `Start failed: ... fetch` or the models never load | The phone has no internet. Turn on mobile data |
 | Red "ESP32 not reachable" | The phone or laptop isn't on the same hotspot, the IP is wrong, or the ESP32 is unpowered |
