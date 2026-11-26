@@ -36,8 +36,8 @@ All the vision AI runs **on the phone**. The ESP32 hosts the web page and drives
 
 | Time | 🔌 Hardware person (H) | 💻 Coding person (C) |
 |---|---|---|
-| 0–10 min | Wire the OLED and buzzer. Run `tools\\setup.ps1` while you wire | Clone the repo. Turn on the phone hotspot (2.4 GHz). Start laptop dev mode |
-| 10–20 min | Run `tools\\flash.ps1`, then the buzzer test | Test the page with the laptop webcam. Check that a cup or bottle is detected |
+| 0–10 min | Wire the OLED and buzzer. Run `tools\setup.ps1` while you wire | Clone the repo. Turn on the phone hotspot (2.4 GHz). Start laptop dev mode |
+| 10–20 min | Run `tools\flash.ps1`, then the buzzer test | Test the page with the laptop webcam. Check that a cup or bottle is detected |
 | 20–30 min | Tape the buzzer to the hand, ESP32 and power bank in a pocket | Set the Chrome flag on the phone. Run it end to end on the phone |
 | 30–40 min | Re-upload if C changed the page | Tune the thresholds. Rehearse the pitch |
 | 40–45 min | **Full demo run-through together** | |
@@ -135,7 +135,7 @@ If you only have an iPhone, use laptop mode for the demo instead.
 python tools/embed_page.py      # web/index.html -> firmware/Reach/page_html.h
 git add -A && git commit -m "page: ..." && git push
 ```
-Then H runs `git pull` and `tools\\flash.ps1` again.
+Then H runs `git pull` and `tools\flash.ps1` again.
 
 ### Settings to tune (all in `web/index.html`)
 | Setting | Where | Effect |
@@ -178,7 +178,7 @@ Then H runs `git pull` and `tools\\flash.ps1` again.
 | OLED stays blank and Serial says `OLED not found` | Check that SDA→D21 and SCL→D22 aren't swapped, and that VCC goes to **3V3** |
 | OLED says `WiFi FAILED` | Wrong name or password in `secrets.h`, or the hotspot is on 5 GHz. Switch it to 2.4 GHz |
 | Upload gets stuck at `Connecting...` | Hold **BOOT** while it connects. Try another USB cable, since some only carry power |
-| `secrets.h: No such file` when compiling | Run `tools\\setup.ps1`. It creates the file |
+| `secrets.h: No such file` when compiling | Run `tools\setup.ps1`. It creates the file |
 | `Start failed: camera blocked on http` | Set up the Chrome flag (Phone mode, steps 1–4) |
 | `Start failed: ... fetch` or the models never load | The phone has no internet. Turn on mobile data |
 | Red "ESP32 not reachable" | The phone or laptop isn't on the same hotspot, the IP is wrong, or the ESP32 is unpowered |
