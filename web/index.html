@@ -1,0 +1,160 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Reach</title>
+<style>
+body{margin:0;font-family:sans-serif;background:#000;color:#fff;text-align:center}
+canvas{width:100%;max-height:55vh;object-fit:contain;background:#111}
+button{font-size:22px;padding:14px 8px;margin:4px;border-radius:12px;border:0;background:#333;color:#fff;min-width:29%}
+button.on{background:#0a7}
+#start,#mic{background:#06c;width:94%}
+#status{font-size:28px;font-weight:bold;margin:8px;min-height:34px}
+#err{color:#f66;font-size:16px}
+</style></head><body>
+<button id="start">Start camera</button>
+<canvas id="c"></canvas>
+<div id="status">Tap Start</div>
+<div id="err"></div>
+<button id="mic">🎤 Say an object</button>
+<div id="targets"></div>
+<video id="v" playsinline muted style="position:absolute;width:1px;height:1px;opacity:0"></video>
+<script type="module">
+import {FilesetResolver, HandLandmarker, ObjectDetector} from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@1.2.3/vision_bundle.mjs";
+
+const BASE = "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@1.2.3";
+const TARGETS = ["cup","bottle","cell phone","remote","bowl","book","scissors","apple"];
+const ALIASES = {phone:"cell phone", mug:"cup", water:"bottle", controller:"remote"};
+
+// Served by the ESP32 -> same origin. Served from a laptop -> add ?esp=<ESP32 IP> to the URL.
+const ESP = new URLSearchParams(location.search).get("esp");
+const ESP_BASE = ESP ? `http://${ESP}` : "";
+
+const $ = id => document.getElementById(id);
+const v = $("v"), c = $("c"), ctx = c.getContext("2d");
+let hands, objects, target = null, box = null, hand = null, frame = 0;
+let lastSpoken = "", lastSpokenAt = 0, lastSend = 0, inflight = false;
+
+function setStatus(t){ $("status").textContent = t; }
+
+function say(text, force){
+  const now = performance.now();
+  if (!force && text === lastSpoken && now - lastSpokenAt < 2500) return;
+  if (!force && speechSynthesis.speaking) return;
+  speechSynthesis.cancel();
+  speechSynthesis.speak(new SpeechSynthesisUtterance(text));
+  lastSpoken = text; lastSpokenAt = now;
+}
+
+function send(d){
+  const now = performance.now();
+  if (inflight || now - lastSend < 120) return;
+  inflight = true; lastSend = now;
+  fetch(`${ESP_BASE}/g?d=${d}&t=${encodeURIComponent(target || "-")}`)
+    .then(r => { if (!r.ok) throw new Error("HTTP " + r.status); $("err").textContent = ""; })
+    .catch(e => { $("err").textContent = "ESP32 not reachable: " + e.message; })
+    .finally(() => { inflight = false; });
+}
+
+function setTarget(name){
+  target = name; box = null;
+  document.querySelectorAll("#targets button").forEach(b => b.classList.toggle("on", b.textContent === name));
+  say(`Looking for ${name}`, true);
+}
+
+for (const t of TARGETS){
+  const b = document.createElement("button");
+  b.textContent = t; b.onclick = () => setTarget(t);
+  $("targets").appendChild(b);
+}
+
+$("mic").onclick = () => {
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SR){ $("err").textContent = "Voice input not supported in this browser"; return; }
+  const rec = new SR();
+  rec.lang = "en-US";
+  rec.onresult = e => {
+    const said = e.results[0][0].transcript.toLowerCase();
+    const name = TARGETS.find(t => said.includes(t))
+              || Object.keys(ALIASES).filter(a => said.includes(a)).map(a => ALIASES[a])[0];
+    if (name) setTarget(name); else say(`Sorry, I can't look for ${said}`, true);
+  };
+  rec.onerror = e => { $("err").textContent = "Voice error: " + e.error; };
+  rec.start();
+};
+
+$("start").onclick = async () => {
+  $("start").disabled = true;
+  setStatus("Loading models…");
+  try {
+    if (!navigator.mediaDevices) throw new Error("camera blocked on http — enable the Chrome 'Insecure origins treated as secure' flag for this address");
+    const fs = await FilesetResolver.forVisionTasks(BASE + "/wasm");
+    hands = await HandLandmarker.createFromOptions(fs, {
+      baseOptions: {modelAssetPath: "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task", delegate: "GPU"},
+      runningMode: "VIDEO", numHands: 1});
+    objects = await ObjectDetector.createFromOptions(fs, {
+      baseOptions: {modelAssetPath: "https://storage.googleapis.com/mediapipe-models/object_detector/efficientdet_lite0/float16/1/efficientdet_lite0.tflite", delegate: "GPU"},
+      runningMode: "VIDEO", scoreThreshold: 0.35, maxResults: 5});
+    v.srcObject = await navigator.mediaDevices.getUserMedia({video: {facingMode: "environment", width: 640, height: 480}, audio: false});
+    await v.play();
+    c.width = v.videoWidth; c.height = v.videoHeight;
+    $("start").style.display = "none";
+    say("Reach ready. Choose an object.", true);
+    requestAnimationFrame(loop);
+  } catch (e) {
+    $("err").textContent = "Start failed: " + e.message;
+    setStatus("Tap Start");
+    $("start").disabled = false;
+  }
+};
+
+function updateTarget(dets){
+  if (!target) return;
+  let best = null;
+  for (const d of dets){
+    const cat = d.categories[0];
+    if (cat.categoryName === target && (!best || cat.score > best.score)) best = {score: cat.score, b: d.boundingBox};
+  }
+  if (!best) return;  // keep last known position (the hand often hides the object)
+  const W = v.videoWidth, H = v.videoHeight, first = !box;
+  box = {x: best.b.originX / W, y: best.b.originY / H, w: best.b.width / W, h: best.b.height / H};
+  if (first) say(`${target} found. Reach out.`, true);
+}
+
+function guide(){
+  if (!target){ setStatus("Choose an object"); send(-1); return; }
+  if (!box){ setStatus(`Searching for ${target}…`); send(-1); return; }
+  if (!hand){ setStatus(`${target} locked — show your hand`); send(-1); return; }
+  const inside = hand.x > box.x && hand.x < box.x + box.w && hand.y > box.y && hand.y < box.y + box.h;
+  if (inside){ setStatus("GRAB IT"); say("Grab it"); send(0); return; }
+  const dx = box.x + box.w / 2 - hand.x, dy = box.y + box.h / 2 - hand.y;
+  const d = Math.min(100, Math.max(1, Math.round(Math.hypot(dx, dy) * 150)));
+  const dir = Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? "right" : "left") : (dy < 0 ? "forward" : "back");
+  setStatus(`${dir.toUpperCase()} · ${d}`);
+  say(dir);
+  send(d);
+}
+
+function draw(){
+  ctx.drawImage(v, 0, 0, c.width, c.height);
+  if (box){
+    ctx.strokeStyle = "#0f0"; ctx.lineWidth = 4;
+    ctx.strokeRect(box.x * c.width, box.y * c.height, box.w * c.width, box.h * c.height);
+  }
+  if (hand){
+    const hx = hand.x * c.width, hy = hand.y * c.height;
+    ctx.fillStyle = "#f0f"; ctx.beginPath(); ctx.arc(hx, hy, 10, 0, 7); ctx.fill();
+    if (box){
+      ctx.strokeStyle = "#ff0"; ctx.beginPath(); ctx.moveTo(hx, hy);
+      ctx.lineTo((box.x + box.w / 2) * c.width, (box.y + box.h / 2) * c.height); ctx.stroke();
+    }
+  }
+}
+
+function loop(){
+  const t = performance.now();
+  if (frame++ % 2 === 0) updateTarget(objects.detectForVideo(v, t).detections);
+  else { const r = hands.detectForVideo(v, t); hand = r.landmarks.length ? r.landmarks[0][9] : null; }
+  guide();
+  draw();
+  requestAnimationFrame(loop);
+}
+</script></body></html>
